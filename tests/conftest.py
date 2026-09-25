@@ -8,8 +8,9 @@ from luna.main import create_app
 @pytest.fixture
 def app():
     # A fresh, isolated Settings instance per test — no dependence on
-    # whatever's actually in the environment / .env when tests run.
-    return create_app(settings=Settings(log_level="WARNING"))
+    # whatever's actually in the environment / .env when tests run, and
+    # never a real secret in a test.
+    return create_app(settings=Settings(log_level="WARNING", groq_api_key="test-key"))
 
 
 @pytest.fixture

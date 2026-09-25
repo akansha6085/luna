@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "structlog>=24.4",
+    "groq>=1.7.0",
 ]
 
 [dependency-groups]
@@ -37,6 +38,12 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends()-as-a-default-argument is the framework's own,
+# intended dependency-injection idiom — not the mutable-default-argument
+# footgun flake8-bugbear's B008 is designed to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: luna-config
+  namespace: luna
+data:
+  # Non-sensitive config only. This is safe to commit to git because
+  # nothing in here is a credential — that's the actual distinction
+  # between a ConfigMap and a Secret, not just "which file has env vars."
+  LUNA_ENV: "kind"
+  LUNA_LOG_LEVEL: "INFO"

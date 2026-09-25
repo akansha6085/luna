@@ -16,6 +16,7 @@ Phase 3, ...) rather than speculatively — config should track real need.
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,13 @@ class Settings(BaseSettings):
 
     service_name: str = "luna"
 
+    # No default, no LUNA_ prefix: this is a real secret, read verbatim
+    # from GROQ_API_KEY (matching the K8s Secret key name and the Groq
+    # SDK's own env-var convention), and required — the app should fail
+    # fast at startup with a clear error if it's missing, not fail deep
+    # inside the first /chat request.
+    groq_api_key: str = Field(validation_alias="GROQ_API_KEY")
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -45,4 +53,8 @@ def get_settings() -> Settings:
     (see api/deps.py once it exists) rather than importing a module-level
     singleton directly — that's the seam that lets tests override config.
     """
-    return Settings()
+    # mypy sees `groq_api_key` as a required constructor argument (it has
+    # no static default) and doesn't know pydantic-settings populates it
+    # from the environment at runtime — a narrow, well-understood gap
+    # with pydantic-settings + strict mypy, not a real bug here.
+    return Settings()  # type: ignore[call-arg]

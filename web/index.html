@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Luna — dev chat</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    #log { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; min-height: 200px; white-space: pre-wrap; }
+    .error { color: #b00020; }
+    .meta { color: #888; font-size: 0.8em; }
+    form { display: flex; gap: 0.5rem; margin-top: 1rem; }
+    input { flex: 1; padding: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Luna — dev chat (Phase 1)</h1>
+  <p class="meta">Not a real product UI — just enough to watch SSE streaming happen. Hits POST /chat directly.</p>
+  <div id="log"></div>
+  <form id="form">
+    <input id="message" placeholder="Say something..." autocomplete="off" />
+    <button type="submit">Send</button>
+  </form>
+
+  <script>
+    const log = document.getElementById("log");
+    const form = document.getElementById("form");
+    const input = document.getElementById("message");
+
+    // EventSource only supports GET, but we need a POST body — so this
+    // reads the SSE stream manually via fetch()'s ReadableStream instead.
+    // SSE events are separated by a blank line; each event's lines start
+    // with "event:" or "data:". We buffer partial chunks across reads
+    // since a network chunk boundary has no relationship to an SSE
+    // event boundary.
+    async function streamChat(message) {
+      const response = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let answerEl = document.createElement("div");
+      log.appendChild(answerEl);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+
+          const eventLine = rawEvent.split("\n").find((l) => l.startsWith("event:"));
+          const dataLine = rawEvent.split("\n").find((l) => l.startsWith("data:"));
+          if (!eventLine || !dataLine) continue;
+
+          const eventType = eventLine.slice("event:".length).trim();
+          const data = JSON.parse(dataLine.slice("data:".length).trim());
+
+          if (eventType === "token") {
+            answerEl.textContent += data.text;
+          } else if (eventType === "error") {
+            const errEl = document.createElement("span");
+            errEl.className = "error";
+            errEl.textContent = `[error: ${data.message}]`;
+            answerEl.appendChild(errEl);
+          } else if (eventType === "done") {
+            return;
+          }
+        }
+      }
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+
+      const userEl = document.createElement("div");
+      userEl.innerHTML = `<b>you:</b> ${message}`;
+      log.appendChild(userEl);
+
+      try {
+        await streamChat(message);
+      } catch (err) {
+        const errEl = document.createElement("div");
+        errEl.className = "error";
+        errEl.textContent = `[request failed: ${err}]`;
+        log.appendChild(errEl);
+      }
+    });
+  </script>
+</body>
+</html>

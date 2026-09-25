@@ -11,6 +11,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 COPY src ./src
+COPY web ./web
 RUN uv sync --frozen --no-dev
 
 # Don't run the app as root inside the container — if something did manage

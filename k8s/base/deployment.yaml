@@ -26,9 +26,18 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8000
+          envFrom:
+            # Non-sensitive config from the ConfigMap.
+            - configMapRef:
+                name: luna-config
           env:
-            - name: LUNA_ENV
-              value: "kind"
+            # The actual secret, pulled from the Secret by key — never
+            # inlined here, never in a committed file with a real value.
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: luna-secrets
+                  key: GROQ_API_KEY
           # Liveness: "is the process alive?" A failing check here gets the
           # pod KILLED and restarted. Must never depend on anything external.
           livenessProbe:
