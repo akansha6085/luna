@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: luna-app
+  namespace: luna
+  labels:
+    app: luna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: luna
+  template:
+    metadata:
+      labels:
+        app: luna
+    spec:
+      containers:
+        - name: luna
+          image: luna:dev
+          # We load images directly into the kind cluster's containerd
+          # (`kind load docker-image`) rather than pushing to a registry.
+          # imagePullPolicy: Never guarantees the kubelet uses that local
+          # image instead of trying (and failing) to pull "luna:dev" from
+          # Docker Hub.
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LUNA_ENV
+              value: "kind"
+          # Liveness: "is the process alive?" A failing check here gets the
+          # pod KILLED and restarted. Must never depend on anything external.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Readiness: "can it serve traffic right now?" A failing check
+          # pulls the pod out of the Service's rotation WITHOUT killing it.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
