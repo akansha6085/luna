@@ -15,6 +15,13 @@ def app():
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    # Plain ASGITransport does NOT run the app's lifespan (that's what
+    # populates app.state.agent_registry/agent_router in main.py) — only
+    # FastAPI's own TestClient does that automatically. Driving
+    # `app.router.lifespan_context` explicitly is the equivalent for a
+    # raw httpx.AsyncClient, and is what makes routes that depend on
+    # app.state actually work in tests.
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c

@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from typing import cast
 
 from groq import AsyncGroq, AsyncStream
-from groq.types.chat import ChatCompletionChunk
+from groq.types.chat import ChatCompletion, ChatCompletionChunk
 
 from luna.core.models import Message
 
@@ -70,3 +70,26 @@ class GroqClient:
                     yield delta
         except Exception as exc:
             raise GroqError(f"Groq stream failed mid-response: {exc}") from exc
+
+    async def complete(self, messages: list[Message], model: str) -> str:
+        """A single non-streaming completion.
+
+        For small, cheap calls — like Phase 2's LLM-classifier fallback —
+        where the response is a one-word category and token-by-token
+        streaming has no UX benefit, only overhead.
+        """
+        payload = [{"role": m.role, "content": m.content} for m in messages]
+        try:
+            raw_response = await self._client.chat.completions.create(
+                model=model,
+                messages=payload,  # type: ignore[arg-type]
+                stream=False,
+            )
+        except Exception as exc:
+            raise GroqError(f"Groq completion failed: {exc}") from exc
+
+        # Same overload-resolution gap as stream_chat above — `stream=False`
+        # guarantees a ChatCompletion at runtime; this cast just tells
+        # mypy what we already know to be true.
+        response = cast(ChatCompletion, raw_response)
+        return response.choices[0].message.content or ""

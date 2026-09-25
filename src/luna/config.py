@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # inside the first /chat request.
     groq_api_key: str = Field(validation_alias="GROQ_API_KEY")
 
+    # Phase 2: how confident the free, zero-network heuristic router must
+    # be (0-1) before we skip the paid LLM-classifier fallback. Lives in
+    # the K8s ConfigMap, not baked into code, specifically so it can be
+    # tuned without a rebuild — see routing/router.py.
+    routing_confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
 
 @lru_cache
 def get_settings() -> Settings:

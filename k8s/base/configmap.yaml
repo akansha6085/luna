@@ -9,3 +9,7 @@ data:
   # between a ConfigMap and a Secret, not just "which file has env vars."
   LUNA_ENV: "kind"
   LUNA_LOG_LEVEL: "INFO"
+  # Phase 2: tunable without a rebuild — bump this via `kubectl edit
+  # configmap luna-config -n luna` + a rollout restart to see routing
+  # behavior change live, no image rebuild required.
+  LUNA_ROUTING_CONFIDENCE_THRESHOLD: "0.6"

@@ -9,17 +9,21 @@ side effects leaking between tests.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
+from luna.agents.registry import build_registry
 from luna.api.routes_chat import router as chat_router
 from luna.api.routes_health import router as health_router
 from luna.config import Settings, get_settings
 from luna.llm.groq_client import GroqClient
 from luna.observability.logging import configure_logging, get_logger
 from luna.observability.middleware import request_context_middleware
+from luna.routing.llm_classifier import classify_with_groq
+from luna.routing.router import AgentRouter
 
 _WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 
@@ -35,8 +39,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The Groq client holds a real HTTP connection pool — build it
         # once here, not per-request (see api/deps.py), and stash it on
         # app.state so route dependencies can read it back out.
-        app.state.groq_client = GroqClient(api_key=settings.groq_api_key)
-        logger.info("luna_startup", env=settings.env, service=settings.service_name)
+        groq_client = GroqClient(api_key=settings.groq_api_key)
+        app.state.groq_client = groq_client
+        # The registry and router both close over that one shared client
+        # rather than each constructing their own — same reasoning as above.
+        app.state.agent_registry = build_registry(groq_client)
+        app.state.agent_router = AgentRouter(
+            classify=partial(classify_with_groq, groq_client),
+            confidence_threshold=settings.routing_confidence_threshold,
+        )
+        logger.info(
+            "luna_startup",
+            env=settings.env,
+            service=settings.service_name,
+            agents=list(app.state.agent_registry),
+            routing_confidence_threshold=settings.routing_confidence_threshold,
+        )
         yield
         logger.info("luna_shutdown")
 
