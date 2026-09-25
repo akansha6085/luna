@@ -3,8 +3,11 @@
 sync:
 	uv sync
 
+# Host-run dev server on 8001 — deliberately NOT 8000, so a
+# `make port-forward` tunnel to the in-cluster pod can stay up on 8000
+# at the same time without the two fighting over the port.
 run:
-	uv run uvicorn luna.main:app --reload --port 8000
+	uv run uvicorn luna.main:app --reload --port 8001
 
 test:
 	uv run pytest
