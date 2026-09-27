@@ -1,0 +1,27 @@
+# Backing services for the FAST local dev loop — NOT the deploy target.
+# Run the app itself on the host (`make run`, uv run uvicorn --reload)
+# for quick edit-test cycles; this just gives it something to talk to.
+# The real deploy target is the kind cluster (k8s/base/) — see README.
+#
+# LUNA_DB_PASSWORD is read from .env automatically: docker compose loads
+# a .env file in the same directory and substitutes ${VARS} in this file
+# with it — no extra flag needed.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: luna
+      POSTGRES_PASSWORD: ${LUNA_DB_PASSWORD}
+      POSTGRES_DB: luna
+    ports:
+      - "5432:5432"
+    volumes:
+      - luna-postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luna -d luna"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  luna-postgres-dev-data:

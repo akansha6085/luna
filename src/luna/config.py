@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # tuned without a rebuild — see routing/router.py.
     routing_confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
+    # Phase 3: like GROQ_API_KEY, a real secret (contains a password) —
+    # no LUNA_ prefix, required, fails fast at startup. The VALUE differs
+    # by environment (localhost for host dev, the in-cluster Service name
+    # for kind) — same env var name, different value per environment's
+    # own secret store, which is the standard way to handle this, not a
+    # code-level branch on "am I in a container."
+    database_url: str = Field(validation_alias="DATABASE_URL")
+
 
 @lru_cache
 def get_settings() -> Settings:

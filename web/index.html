@@ -49,7 +49,7 @@
        It's fully functional but client-side — clears if you clear
        browser data, doesn't sync across devices/browsers. Phase 3 swaps
        the storage underneath (a real Postgres-backed /conversations
-       API) without changing this UI shell. See js below: STORAGE_KEY. */
+       API) without changing this UI shell. See js: storage layer. */
     #sidebar {
       width: 260px;
       background: var(--bg-sidebar);
@@ -246,7 +246,7 @@
     <aside id="sidebar">
       <button id="new-chat-btn">＋ New chat</button>
       <div id="conversation-list"></div>
-      <div class="sidebar-meta">Luna — personal project, dev build. History is local to this browser (see code comments).</div>
+      <div class="sidebar-meta">Luna — personal project, dev build. History is stored server-side in Postgres (Phase 3).</div>
       <div id="resize-handle" title="Drag to resize"></div>
     </aside>
     <main id="main">
@@ -260,61 +260,99 @@
           <input id="message-input" placeholder="Message Luna..." autocomplete="off" />
           <button type="submit" id="send-btn">Send</button>
         </form>
-        <div class="composer-hint">Routed to coding / infra / product / assistant automatically. Each message is still answered independently (multi-turn memory lands in Phase 3).</div>
+        <div class="composer-hint">Routed to coding / infra / product / assistant automatically. Conversations persist server-side in Postgres — multi-turn memory included.</div>
       </div>
     </main>
   </div>
 
   <script>
     // ---------------------------------------------------------------
-    // Storage layer — Phase 2: browser localStorage ONLY.
+    // Storage layer — Phase 3: the SERVER (Postgres via /conversations).
     //
-    // Deliberately isolated behind these four functions
-    // (loadState/saveState/newConversation/deleteConversation) so that
-    // when Phase 3 adds real server-side persistence (Postgres +
-    // /conversations endpoints), only THIS section needs to change —
-    // everything below that calls these functions (rendering, sending
-    // messages) stays the same. That's the actual point of keeping a
-    // storage seam even for a "temporary" implementation.
+    // This is the swap the Phase 2 localStorage version was structured
+    // for: the rendering/typewriter code below is unchanged; only this
+    // section moved from "read/write a localStorage blob" to "call the
+    // API and keep a local cache of what it returns."
+    //
+    // State shape: { conversations: {id -> {id, title, updatedAt,
+    // messages, loaded}}, activeId }. Messages are loaded lazily per
+    // conversation (openConversation) rather than all up front — the
+    // sidebar only needs id/title/updatedAt, which GET /conversations
+    // already returns. The SERVER is authoritative: after every send we
+    // re-fetch the list so titles (set server-side from the first
+    // message) and ordering (by updated_at) always reflect reality.
     // ---------------------------------------------------------------
-    const STORAGE_KEY = "luna:conversations:v1";
+    const state = { conversations: {}, activeId: null };
 
-    function loadState() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return { conversations: {}, activeId: null };
-        return JSON.parse(raw);
-      } catch {
-        // Corrupt/unavailable storage (private browsing, quota, etc.)
-        // should never crash the page — fall back to an empty session.
-        return { conversations: {}, activeId: null };
+    function ensureConv(id) {
+      if (!state.conversations[id]) {
+        state.conversations[id] = { id, title: null, updatedAt: Date.now(), messages: [], loaded: false };
       }
+      return state.conversations[id];
     }
 
-    function saveState() {
+    async function refreshConversations() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch {
-        // Best-effort — if storage is unavailable, the chat still works
-        // for the current page load, it just won't persist.
-      }
+        const resp = await fetch("/conversations");
+        if (!resp.ok) return;  // offline/5xx: keep showing what we have
+        const rows = await resp.json();
+        const seen = new Set();
+        for (const row of rows) {
+          seen.add(row.id);
+          const existing = state.conversations[row.id];
+          if (existing) {
+            // Don't clobber a loaded messages array — the list endpoint
+            // doesn't include messages, and the cache is still valid.
+            existing.title = row.title;
+            existing.updatedAt = Date.parse(row.updated_at);
+          } else {
+            state.conversations[row.id] = {
+              id: row.id, title: row.title, updatedAt: Date.parse(row.updated_at),
+              messages: [], loaded: false,
+            };
+          }
+        }
+        // Conversations the server no longer knows about (deleted in
+        // another tab, or a pending one whose request never landed).
+        for (const id of Object.keys(state.conversations)) {
+          if (!seen.has(id) && state.conversations[id].loaded) delete state.conversations[id];
+        }
+        renderSidebar();
+      } catch { /* network down: keep current view */ }
     }
 
-    function newConversation() {
-      const id = crypto.randomUUID();
-      state.conversations[id] = { id, title: null, createdAt: Date.now(), messages: [] };
+    async function openConversation(id) {
       state.activeId = id;
-      saveState();
-      return id;
+      const conv = ensureConv(id);
+      renderSidebar();
+      if (conv.loaded) {
+        renderMessages();
+        return;
+      }
+      renderMessages();  // renders the "loading" empty state
+      try {
+        const resp = await fetch(`/conversations/${id}/messages`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const rows = await resp.json();
+        conv.messages = rows.map((r) => ({ role: r.role, content: r.content, agent: r.agent_name }));
+        conv.loaded = true;
+      } catch (err) {
+        conv.messages = [{ role: "assistant", content: `[couldn't load history: ${err}]`, error: true }];
+      }
+      if (state.activeId === id) renderMessages();
     }
 
-    function deleteConversation(id) {
+    async function deleteConversation(id) {
+      // Optimistic local removal; the server DELETE is idempotent by
+      // design (deleting an unknown id is a no-op, not an error), so a
+      // pending never-yet-created conversation is safe to "delete" too.
       delete state.conversations[id];
       if (state.activeId === id) state.activeId = null;
-      saveState();
+      renderSidebar();
+      renderMessages();
+      try { await fetch(`/conversations/${id}`, { method: "DELETE" }); } catch { }
+      refreshConversations();
     }
-
-    let state = loadState();
 
     // ---------------------------------------------------------------
     // UI preferences — theme + sidebar geometry. Separate key from
@@ -344,7 +382,7 @@
     const sendBtn = document.getElementById("send-btn");
 
     function conversationsSortedNewestFirst() {
-      return Object.values(state.conversations).sort((a, b) => b.createdAt - a.createdAt);
+      return Object.values(state.conversations).sort((a, b) => b.updatedAt - a.updatedAt);
     }
 
     function renderSidebar() {
@@ -365,16 +403,11 @@
         del.addEventListener("click", (e) => {
           e.stopPropagation();
           deleteConversation(conv.id);
-          renderSidebar();
-          renderMessages();
         });
         item.appendChild(del);
 
         item.addEventListener("click", () => {
-          state.activeId = conv.id;
-          saveState();
-          renderSidebar();
-          renderMessages();
+          openConversation(conv.id);
         });
         conversationListEl.appendChild(item);
       }
@@ -424,11 +457,11 @@
     // EventSource can't do this: it only supports GET, and /chat needs a
     // POST body.
     // ---------------------------------------------------------------
-    async function streamChat(message, onEvent) {
+    async function streamChat(message, conversationId, onEvent) {
       const response = await fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, conversation_id: conversationId }),
       });
       if (!response.ok || !response.body) {
         onEvent("error", { message: `Request failed (${response.status})` });
@@ -484,16 +517,17 @@
                                            // the network before we speed up
 
     async function sendMessage(text) {
-      if (!state.activeId) newConversation();
-      const conv = state.conversations[state.activeId];
+      // No local "create conversation" step anymore: the SERVER creates
+      // it (and derives the title from this first message) — this
+      // client just learns the id from the stream's first SSE event.
+      const sendConversationId = state.activeId;
+      const conv = sendConversationId ? ensureConv(sendConversationId) : null;
 
-      if (!conv.title) {
-        conv.title = text.length > 40 ? text.slice(0, 40) + "…" : text;
+      if (conv) {
+        conv.messages.push({ role: "user", content: text });
+        conv.loaded = true;
+        renderMessages();
       }
-      conv.messages.push({ role: "user", content: text });
-      saveState();
-      renderSidebar();
-      renderMessages();
 
       // `assistantMsg.content` is the FULL text received so far (what
       // gets persisted); the visible DOM text node lags behind it, advanced
@@ -509,7 +543,7 @@
       function ensureStarted() {
         if (started) return;
         started = true;
-        conv.messages.push(assistantMsg);
+        if (conv) conv.messages.push(assistantMsg);
         const row = renderMessageRow(assistantMsg);  // badge + empty text
         const bubble = row.querySelector(".bubble");
         // The typed text lives in ONE dedicated text node between the
@@ -555,8 +589,8 @@
 
           if (streamDone && textNode.textContent.length >= full) {
             if (caret) caret.remove();
-            saveState();          // persist the fully-displayed message
-            renderSidebar();      // title may have just been set
+            refreshConversations();  // server is authoritative: pick up
+            // the server-derived title + bumped updated_at ordering
             resolve();
             return;               // stop the loop
           }
@@ -569,8 +603,18 @@
         streamDone = true;   // drain types out the remainder, then resolves
       }
 
-      const networkDone = streamChat(text, (eventType, data) => {
-        if (eventType === "routed") {
+      const networkDone = streamChat(text, sendConversationId, (eventType, data) => {
+        if (eventType === "conversation") {
+          // Server-created id for a brand-new conversation — become
+          // "in" that conversation for everything that follows (the
+          // sidebar entry itself appears via refreshConversations).
+          if (!state.activeId) {
+            state.activeId = data.conversation_id;
+            ensureConv(data.conversation_id).loaded = true;
+            // Move the optimistic user message into the real conv object.
+            ensureConv(data.conversation_id).messages.push({ role: "user", content: text });
+          }
+        } else if (eventType === "routed") {
           assistantMsg.agent = data.agent;
           ensureStarted();     // row + badge appear immediately
         } else if (eventType === "token") {
@@ -658,8 +702,10 @@
     // Wiring
     // ---------------------------------------------------------------
     document.getElementById("new-chat-btn").addEventListener("click", () => {
+      // activeId stays null until the server assigns one on the first
+      // message — a "New chat" that's never sent costs the database
+      // nothing (no empty rows from clicks that go nowhere).
       state.activeId = null;
-      saveState();
       renderSidebar();
       renderMessages();
       inputEl.focus();
@@ -683,7 +729,7 @@
 
     applyTheme();
     applySidebar();
-    renderSidebar();
+    refreshConversations();   // history from the server, not localStorage
     renderMessages();
     inputEl.focus();
   </script>

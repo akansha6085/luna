@@ -1,0 +1,18 @@
+# A headless Service (clusterIP: None) — the canonical pattern for a
+# StatefulSet: DNS for "postgres" resolves directly to the one pod's IP
+# rather than load-balancing across a set (which wouldn't make sense for
+# a single-writer database anyway). This hostname, "postgres", is exactly
+# what the in-cluster DATABASE_URL (in the luna-db-credentials Secret,
+# built by `make create-db-secret`) points at.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: luna
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

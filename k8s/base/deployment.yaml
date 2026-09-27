@@ -31,13 +31,18 @@ spec:
             - configMapRef:
                 name: luna-config
           env:
-            # The actual secret, pulled from the Secret by key — never
+            # The actual secrets, pulled from Secrets by key — never
             # inlined here, never in a committed file with a real value.
             - name: GROQ_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: luna-secrets
                   key: GROQ_API_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: luna-db-credentials
+                  key: DATABASE_URL
           # Liveness: "is the process alive?" A failing check here gets the
           # pod KILLED and restarted. Must never depend on anything external.
           livenessProbe:

@@ -17,8 +17,10 @@ from fastapi.responses import FileResponse
 
 from luna.agents.registry import build_registry
 from luna.api.routes_chat import router as chat_router
+from luna.api.routes_conversations import router as conversations_router
 from luna.api.routes_health import router as health_router
 from luna.config import Settings, get_settings
+from luna.db.base import build_engine_and_sessionmaker, check_connection
 from luna.llm.groq_client import GroqClient
 from luna.observability.logging import configure_logging, get_logger
 from luna.observability.middleware import request_context_middleware
@@ -48,6 +50,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             classify=partial(classify_with_groq, groq_client),
             confidence_threshold=settings.routing_confidence_threshold,
         )
+
+        # The DB engine owns a real connection pool — same "build once,
+        # not per-request" reasoning as the Groq client above.
+        db_engine, db_sessionmaker = build_engine_and_sessionmaker(settings.database_url)
+        app.state.db_engine = db_engine
+        app.state.db_sessionmaker = db_sessionmaker
+        # Per-app-instance list (see routes_health.py's docstring for why
+        # this is NOT a module-level global) — Phase 0 built /ready as an
+        # extensible registry specifically so this is additive, no rewrite.
+        app.state.readiness_checks = [
+            ("database", partial(check_connection, db_sessionmaker)),
+        ]
+
         logger.info(
             "luna_startup",
             env=settings.env,
@@ -56,6 +71,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             routing_confidence_threshold=settings.routing_confidence_threshold,
         )
         yield
+        # Release pooled connections explicitly rather than relying on
+        # process exit to do it — matters for tests, which build many
+        # short-lived app instances in one process.
+        await db_engine.dispose()
         logger.info("luna_shutdown")
 
     app = FastAPI(title="Luna", version="0.1.0", lifespan=lifespan)
@@ -64,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(chat_router)
+    app.include_router(conversations_router)
 
     @app.get("/")
     async def index() -> FileResponse:

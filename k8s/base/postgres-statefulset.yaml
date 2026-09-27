@@ -1,0 +1,71 @@
+# Deliberately NOT listed in kustomization.yaml's resources, even though
+# it lives in this directory — Postgres has to exist and be Ready BEFORE
+# the migration Job runs, which has to complete BEFORE the app rolls out.
+# `kubectl apply -k` applies everything in one shot with no ordering
+# guarantee, so this (and postgres-service.yaml) are applied directly via
+# `kubectl apply -f` from the Makefile's deploy-db target instead — see
+# the Makefile's `deploy` target for the full ordered sequence.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: luna
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            # Non-secret — same reasoning as GROQ's Secret/ConfigMap
+            # split: these two aren't credentials, only the password is.
+            - name: POSTGRES_USER
+              value: "luna"
+            - name: POSTGRES_DB
+              value: "luna"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: luna-db-credentials
+                  key: POSTGRES_PASSWORD
+            # Without this, Postgres puts its data directly at the PVC
+            # mount root, where it collides with the volume's own
+            # lost+found directory on some storage classes.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "luna", "-d", "luna"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "luna", "-d", "luna"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  # This is what makes it a StatefulSet rather than a plain Deployment
+  # with a volume bolted on: the PVC is created and bound to THIS pod
+  # identity specifically, and survives pod restarts/rescheduling —
+  # exactly the property a database needs that a stateless app pod
+  # (luna-app's plain Deployment) does not.
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

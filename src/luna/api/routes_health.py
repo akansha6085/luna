@@ -12,23 +12,25 @@
   alive and gets traffic again the moment checks pass. This is the
   right place for "is the DB reachable" style checks.
 
-Phase 0 has no real dependencies yet, so /ready has nothing to check —
-but it's built as an extensible list of checks specifically so Phase 3
-(DB) and Phase 5 (Qdrant) are additive, not a rewrite.
+Phase 0 had no real dependencies, so /ready had nothing to check — but
+it was built as an extensible list of checks specifically so Phase 3
+(DB, added below) and Phase 5 (Qdrant) would be additive, not a rewrite.
+
+The checks list lives on `request.app.state`, NOT as a module-level
+global. A module-level list would accumulate stale entries every time
+`create_app()` runs (every test, potentially more than one app in a
+process) — each closing over a possibly-already-closed resource from a
+previous app instance. Per-app-instance state avoids that entirely.
 """
 
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(tags=["health"])
 
-# Each entry: (name, async check -> True if healthy). Populated by later
-# phases (e.g. db.health.check_postgres) via readiness_checks.append(...)
-# from main.py's app-startup wiring — kept here as the single registry so
-# /ready always reflects exactly what's actually been wired up.
-readiness_checks: list[tuple[str, Callable[[], Awaitable[bool]]]] = []
+ReadinessCheck = tuple[str, Callable[[], Awaitable[bool]]]
 
 
 @router.get("/health")
@@ -37,8 +39,9 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/ready")
-async def ready() -> JSONResponse:
-    results = {name: await check() for name, check in readiness_checks}
+async def ready(request: Request) -> JSONResponse:
+    checks: list[ReadinessCheck] = getattr(request.app.state, "readiness_checks", [])
+    results = {name: await check() for name, check in checks}
     all_ok = all(results.values())
     # A kubelet readinessProbe judges by HTTP status code, not body content —
     # so an unready pod MUST get a non-2xx status, or the probe silently

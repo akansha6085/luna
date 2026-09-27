@@ -1,0 +1,48 @@
+# Runs `alembic upgrade head` to completion, then exits — a Job, not a
+# Deployment, because this is explicitly one-off work, not a long-running
+# process. The Makefile's `migrate-k8s` target applies this AFTER Postgres
+# is Ready and BEFORE the app Deployment rolls out (see the `deploy`
+# target) — ordering that matters: the app's first request after a
+# rollout would otherwise hit a schema it doesn't expect yet.
+#
+# Jobs are immutable once created (can't kubectl apply a changed spec
+# onto an existing Job name), so migrate-k8s deletes any previous
+# luna-migrate Job before applying this — safe, since a completed Job
+# has already done its work and leaves no state of its own to lose.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: luna-migrate
+  namespace: luna
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: luna:dev
+          imagePullPolicy: Never
+          # --frozen --no-dev: see the Dockerfile's CMD for why plain
+          # `uv run` without these re-syncs (incl. dev deps) at container
+          # start and — this is where it was actually caught — can leave
+          # `alembic`'s own entry point missing afterward.
+          command: ["uv", "run", "--frozen", "--no-dev", "alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: luna-config
+          env:
+            # Settings requires GROQ_API_KEY even though this migration
+            # never uses it — same env wiring as the app Deployment for
+            # consistency, rather than a second, narrower config shape
+            # just for this Job.
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: luna-secrets
+                  key: GROQ_API_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: luna-db-credentials
+                  key: DATABASE_URL
